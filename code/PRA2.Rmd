@@ -1,0 +1,467 @@
+---
+title: 'PRÁCTICA 2: Limpieza y validación de datos'
+author: "Irene Martínez de Soto"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(knitr)
+library(lubridate)
+library(VIM)
+library(stringr)
+library(psych)
+library(pROC)
+library(dplyr)
+library(nortest)
+library(corrplot)
+library(ggplot2)
+```
+
+
+****
+# Descripción del dataset.
+****
+
+El dataset seleccionado contiene los datos reporte mundial de felicidad mundial generado el año 2019. Con este conjunto de datos se pretende analizar qué características son más determinantes a la hora de tener un mayor nivel de felicidad en su población. 
+
+Los datos están disponibles públicamente en https://www.kaggle.com/unsdsn/world-happiness y se puede obtener más información respecto al análisis oficial realizado en https://worldhappiness.report/ed/2019/.
+
+Las reflexiones obtenidas a partir del análisis pueden ser empleadas por otros países para intentar mejorar el suyo entendiendo qué factores afectarán más al resultado final.
+
+El dataset contiene un único archivo en formato csv, por lo que no es necesario realizar ninguna integración adicional de los datos. 
+
+El conjunto de datos tiene un registro por país. Los datos principales que se recogen en cada uno de ellos son:
+
+
+- **Overall rank** Clasificación global
+
+- **Country or region**  Nombre del país o región
+
+- **Score** Puntuación de felicidad
+
+Los demás atributos incluidos en el conjunto de datos están formados por valoraciones de distintos dominios relativos a la vida en un determinado país. Las valoraciones representan el porcentaje en el que cada uno de ellos influyó positivamente en el cálculo de la calificación final de la región. Los dominios son:
+ 
+- **GDP per capita** Influencia del PIB per cápita en la clasificación.
+
+- **Social support** Influencia del apoyo social en la clasificación.
+ 
+- **Healthy life expectancy**  Influencia de la esperanza de vida en la clasificación.
+
+- **Freedom** Influencia de la libertad en la clasificación.
+
+- **Generosity** Influencia de la generosidad en la clasificación.
+
+- **Corruption** Influencia de la percepción de corrupción en la clasificación.
+
+El código de esta práctica así como todos los datos utilizados durante la misma están disponibles en: https://github.com/irenemds/Practica2_M2.851_20191
+
+****
+# Importancia y objetivo de los análisis
+****
+
+Con el conjunto de datos a analizar, se pretende determinar cual de los dominios incluidos en el reporte influye más sobre la clasificación y las calificaciones dadas por la población. Esto permitirá además predecir como las mejoras en cada uno de los dominios puede influis de manera positiva a la calificación obtenida por el país, permitiendo a los gobiernos priorizar aquellas que puedan producir un mayor impacto.
+
+Además se pueden crear agrupaciones de los países para revisar las relaciones y similitudes entre ellos y se podría intentar aplicar un modeo de regresión para estimar la calificación obtenida en función de la valoración de los distintos dominios.
+
+Como se mencionó anteriormente, estos análisis pueden ser empleados desde el punto de vista político para comprender mejor las carencias presentes en la sociedad de un país y poder poner medidas para mejorar la situación y así la felicidad de la población.
+
+****
+# Limpieza de datos
+****
+
+Para comenzar el proyecto, se realiza la carga inicial de los datos seguida de una representación inicial para verificar que los datos mostrados son correctos.
+
+```{r, echo=TRUE}
+happiness_report <- read.csv("../data/2019.csv")
+colnames(happiness_report)[2] <- "Country"
+head(happiness_report)
+```
+
+A continuación se comprueba que el tipo de variable asignada a cada uno de los atributos es correcto.
+
+```{r, echo=TRUE}
+# Tipo de dato asignado a cada campo
+sapply(happiness_report, function(x) class(x))
+```
+
+Se observa que los tipos de variables asignados automáticamente son los correctos.
+
+## Selección de los datos de interés
+
+En este caso todos los datos son relevantes para el análisis, solo se eliminará el campo del ranking global ya que no aporta información adicional.
+
+```{r, echo=TRUE}
+# Eliminar las primera columna
+happiness_report <- happiness_report[, -1]
+```
+
+## Elementos vacíos
+
+En los campos de la influencia de cada uno de los dominios en la calificación del país, es posible que se encuentre algún 0 si el mismo no ha influido nada en la decisión, por lo que no se tomará 0 como un valor vacío en este caso.
+
+Se consideran únicamente los valores vacíos.
+
+```{r, echo=TRUE}
+# Números de valores desconocidos por campo
+sapply(happiness_report, function(x) sum(is.na(x)))
+```
+
+No se ha encontrado ningún valor vacío.
+
+Si se hubiera encontrado algún registro con el campo "Country" vacío, ese habría sido eliminado.
+
+Para los demás atributos, se habría utilizado algún algoritmo para predecir un valor apropiado que no distorsione los datos y los resultados del análisis.
+
+## Valores extremos
+Los valores extremos o outliers son aquellos que parecen no ser congruentes sin los comparamos con el resto de los datos.
+
+Para identificar visualmente estos valores, se utilizan las gráficas de tipo *boxplot*, como se representa a continuación:
+
+```{r, echo=TRUE}
+par(mfrow=c(2,2))
+for(i in 1:ncol(happiness_report)) {
+  if (is.numeric(happiness_report[,i])){
+    boxplot(happiness_report[,i], main = colnames(happiness_report)[i], width = 100)
+  }
+}
+```
+
+Se observa que sí hay outliers, en la mayoría de los atributos existen registros con valores que salen de lo normal. Sin embargo, todos ellos están dentro del rango de valores esperados, son coherentes con el análisis, ya que pueden estar entre 0 y 1 y ninguno de ellos supera o está por debajo de ellos.
+
+Modificar o eliminar estos registros causaría una pérdida de información, por lo que en este caso los valores se mantendrán.
+
+
+****
+# Análisis de los datos
+****
+
+En los siguientes apartados se incluyen los pasos para realizar el proyecto de análisis descrito anteriormente, determinar los dominios que influyen en mayor manera sobre la calificación de felicidad obtenida.
+
+## Selección de los grupos de datos a analizar
+
+Se realizan agrupaciones en función del valor de los atributos de la percepción de los distintos dominios incluidos en el dataset:
+
+"GDP.per.capita", "Social.support", "Freedom.to.make.life.choices", "Generosity", "Healthy.life.expectancy" y "Perceptions.of.corruption"
+
+En función de sus valores máximo y mínimo, se crean 4 grupos equidistantes sobre los que se realizarán las comparaciones.
+
+Comenzando por el atributo **GDP.per.capita**:
+
+```{r, echo=TRUE}
+max_value <- max(happiness_report$GDP.per.capita, na.rm = TRUE)
+min_value <- min(happiness_report$GDP.per.capita, na.rm = TRUE)
+
+range_step <- (max_value - min_value) / 4
+
+happiness_report.GDP.verylow <- happiness_report[happiness_report$GDP.per.capita <= min_value+range_step,]
+happiness_report.GDP.low <- happiness_report[(happiness_report$GDP.per.capita <= min_value+range_step*2) & (happiness_report$GDP.per.capita > min_value+range_step),]
+happiness_report.GDP.high <- happiness_report[(happiness_report$GDP.per.capita <= min_value+range_step*3) & (happiness_report$GDP.per.capita > min_value+range_step*2),]
+happiness_report.GDP.veryhigh <- happiness_report[(happiness_report$GDP.per.capita <= min_value+range_step*4) & (happiness_report$GDP.per.capita > min_value+range_step*3),]
+
+```
+
+**Social.support**:
+
+```{r, echo=TRUE}
+max_value <- max(happiness_report$Social.support, na.rm = TRUE)
+min_value <- min(happiness_report$Social.support, na.rm = TRUE)
+
+range_step <- (max_value - min_value) / 4
+
+happiness_report.social.verylow <- happiness_report[happiness_report$Social.support <= min_value+range_step,]
+happiness_report.social.low <- happiness_report[(happiness_report$Social.support <= min_value+range_step*2) & (happiness_report$Social.support > min_value+range_step),]
+happiness_report.social.high <- happiness_report[(happiness_report$Social.support <= min_value+range_step*3) & (happiness_report$Social.support > min_value+range_step*2),]
+happiness_report.social.veryhigh <- happiness_report[(happiness_report$Social.support <= min_value+range_step*4) & (happiness_report$Social.support > min_value+range_step*3),]
+
+```
+
+
+**Freedom.to.make.life.choices**:
+
+```{r, echo=TRUE}
+max_value <- max(happiness_report$Freedom.to.make.life.choices, na.rm = TRUE)
+min_value <- min(happiness_report$Freedom.to.make.life.choices, na.rm = TRUE)
+
+range_step <- (max_value - min_value) / 4
+
+happiness_report.freedom.verylow <- happiness_report[happiness_report$Freedom.to.make.life.choices <= min_value+range_step,]
+happiness_report.freedom.low <- happiness_report[(happiness_report$Freedom.to.make.life.choices <= min_value+range_step*2) & (happiness_report$Freedom.to.make.life.choices > min_value+range_step),]
+happiness_report.freedom.high <- happiness_report[(happiness_report$Freedom.to.make.life.choices <= min_value+range_step*3) & (happiness_report$Freedom.to.make.life.choices > min_value+range_step*2),]
+happiness_report.freedom.veryhigh <- happiness_report[(happiness_report$Freedom.to.make.life.choices <= min_value+range_step*4) & (happiness_report$Freedom.to.make.life.choices > min_value+range_step*3),]
+
+```
+
+
+**Generosity**:
+
+```{r, echo=TRUE}
+max_value <- max(happiness_report$Generosity, na.rm = TRUE)
+min_value <- min(happiness_report$Generosity, na.rm = TRUE)
+
+range_step <- (max_value - min_value) / 4
+
+happiness_report.Generosity.verylow <- happiness_report[happiness_report$Generosity <= min_value+range_step,]
+happiness_report.Generosity.low <- happiness_report[(happiness_report$Generosity <= min_value+range_step*2) & (happiness_report$Generosity > min_value+range_step),]
+happiness_report.Generosity.high <- happiness_report[(happiness_report$Generosity <= min_value+range_step*3) & (happiness_report$Generosity > min_value+range_step*2),]
+happiness_report.Generosity.veryhigh <- happiness_report[(happiness_report$Generosity <= min_value+range_step*4) & (happiness_report$Generosity > min_value+range_step*3),]
+
+```
+
+
+**Healthy.life.expectancy**:
+
+```{r, echo=TRUE}
+max_value <- max(happiness_report$Healthy.life.expectancy, na.rm = TRUE)
+min_value <- min(happiness_report$Healthy.life.expectancy, na.rm = TRUE)
+
+range_step <- (max_value - min_value) / 4
+
+happiness_report.LifeExpectancy.verylow <- happiness_report[happiness_report$Healthy.life.expectancy <= min_value+range_step,]
+happiness_report.LifeExpectancy.low <- happiness_report[(happiness_report$Healthy.life.expectancy <= min_value+range_step*2) & (happiness_report$Healthy.life.expectancy > min_value+range_step),]
+happiness_report.LifeExpectancy.high <- happiness_report[(happiness_report$Healthy.life.expectancy <= min_value+range_step*3) & (happiness_report$Healthy.life.expectancy > min_value+range_step*2),]
+happiness_report.LifeExpectancy.veryhigh <- happiness_report[(happiness_report$Healthy.life.expectancy <= min_value+range_step*4) & (happiness_report$Healthy.life.expectancy > min_value+range_step*3),]
+
+```
+
+**Perceptions.of.corruption**:
+
+```{r, echo=TRUE}
+max_value <- max(happiness_report$Perceptions.of.corruption, na.rm = TRUE)
+min_value <- min(happiness_report$Perceptions.of.corruption, na.rm = TRUE)
+
+range_step <- (max_value - min_value) / 4
+
+happiness_report.Corruption.verylow <- happiness_report[happiness_report$Perceptions.of.corruption <= min_value+range_step,]
+happiness_report.Corruption.low <- happiness_report[(happiness_report$Perceptions.of.corruption <= min_value+range_step*2) & (happiness_report$Perceptions.of.corruption > min_value+range_step),]
+happiness_report.Corruption.high <- happiness_report[(happiness_report$Perceptions.of.corruption <= min_value+range_step*3) & (happiness_report$Perceptions.of.corruption > min_value+range_step*2),]
+happiness_report.Corruption.veryhigh <- happiness_report[(happiness_report$Perceptions.of.corruption <= min_value+range_step*4) & (happiness_report$Perceptions.of.corruption > min_value+range_step*3),]
+
+```
+
+Una vez creados los grupos por cada uno de los dominios disponibles en el dataset, se procederá a realizar las comparaciones para comprobar cual de ellos influyó en mayor medida en los resultados obtenidos.
+
+## Comprobación de la normalidad y homogeneidad en la varianza
+
+### Comprobación normalidad
+
+Se utilizará el test de normalidad de Anderson Darling. Se considerará como hipotesis nula que la variable sigue una distribución normal.
+
+Se aplicará el valor de significación 0.05, utilizado de manera standard.
+
+```{r, echo=TRUE}
+col.names = colnames(happiness_report)
+#Se aplica el test sobre cada una de las variables numéricas
+for (i in 1:ncol(happiness_report)) {
+  if (is.integer(happiness_report[,i]) | is.numeric(happiness_report[,i])) {
+    p_val = ad.test(happiness_report[,i])$p.value
+    if (p_val < 0.05) {
+      cat(col.names[i])
+      if (i < ncol(happiness_report) - 1) cat(", ")
+      if (i %% 3 == 0) cat("\n")
+    }
+  }
+}
+
+```
+
+Las 5 variables incluidas en el listado anterior son las que no cumplen la condición de normalidad. Se tendrá en cuenta si en los siguientes apartados es necesario que cumplan esta característica para alguno de los análisis o métodos a emplear.
+
+### Comprobación homogeneidad varianzas
+
+En este caso se utilizará el test de Fligner-Killeen para cada una de las variables correspondientes a los dominios incluidos en el reporte.
+
+```{r, echo=TRUE}
+fligner.test(Score ~ GDP.per.capita, data = happiness_report)
+```
+
+```{r, echo=TRUE}
+fligner.test(Score ~ Social.support, data = happiness_report)
+```
+
+```{r, echo=TRUE}
+fligner.test(Score ~  Healthy.life.expectancy, data = happiness_report)
+```
+
+```{r, echo=TRUE}
+fligner.test(Score ~ Generosity, data = happiness_report)
+```
+
+```{r, echo=TRUE}
+fligner.test(Score ~ Perceptions.of.corruption, data = happiness_report)
+```
+
+Se comprueba que la única variable que sí cumple la condición de homogeneidad de varianzas es GDP.per.capita, ya que es el único caso en el que el p-valor es mayor que el valor de significancia, 0.05.
+
+
+## Aplicación de pruebas estadísticas
+
+En este apartado se utilizarán 3 métodos de contraste para comprobar cuales son los dominios incluidos en el estudio que más afectan el resultado del nivel de felicidad.
+
+
+### Identificación de los dominios más relevantes
+
+#### Correlación entre variables
+
+En este caso se realizará una prueba de correlación de las veriables. Se comprbará cuál de los dominios tiene una mayor de correlación con la variable "Score" para obtener una idea inicial de cuál es el más influyente.
+
+```{r, echo=TRUE}
+correlacion<-round(cor(happiness_report[, -1]), 3)
+
+corrplot(correlacion, method="number", type="upper")
+```
+
+Se comprueba que la variable con mayor coeficiente de correlación con la puntuación, "Score" es GDP.per.capita, ligeramente por encima de Social.support y Healthy-life.expectancy.
+
+Tras este primer análisis se comprueba que estas 3 son las más influyentes en la puntuación.
+
+#### Contraste entre puntuaciones con alto nivel de Generosidad y bajo
+
+En el análisis anterior se observó que el coeficiente de correlación entre la generosidad y la puntuación de felicidad es muy bajo. En este apartado se va a comparar la media de la puntuación de felicidad de los países con nivel de generosidad alto y bajo, utilizando los grupos creados anteriormente.
+
+
+```{r, echo=TRUE}
+happiness_report.Generosity.low.score <- happiness_report[(happiness_report$Generosity <= min_value+range_step*2) & (happiness_report$Generosity > min_value+range_step),]$Score
+happiness_report.Generosity.high.score <- happiness_report[(happiness_report$Generosity <= min_value+range_step*3) & (happiness_report$Generosity > min_value+range_step*2),]$Score
+```
+
+Tras haber extraido los valores de la puntuación a comparar, se utiliza el método contraste de hipótesis de las dos muestras sobre la diferencia
+de medias. La hipótesis nula será que ambas medias sean iguales y la alternativa que la diferencia sea menor de 0.
+
+Se toma como valor de significación 0.05.
+
+```{r, echo=TRUE}
+t.test(happiness_report.Generosity.low.score, happiness_report.Generosity.high.score,
+alternative = "less")
+```
+
+Se observa que el valor de p es ligeramente inferior a 0.05, por lo que se descarta la hipótesis nula, aunque por muy poco. De esta manera se obtiene que la media de felicidad para países con la generosidad más baja el nivel de felicidad también es menor, a pesar de que como se observo en el apartado anterior y en este se pudo entrever, la diferencia producida por este dominio no es muy significativa.
+
+### Agrupación de países
+
+#### Algoritmo K-means
+
+Para realizar la agrupación de los países en función de la información conocida, se utilizará el algoritmo de k-means.
+
+```{r, echo=TRUE}
+#Se crea el modelo eliminando la columna con el nombre del país, ya que no aporta información.
+clusters <- kmeans(happiness_report[,-1], 4)
+
+# Se almacena el grupo como una columna más.
+happiness_report$Grupo <- as.factor(clusters$cluster)
+```
+
+Una vez creado el modelo y las agrupaciones, se verifican los datos obtenidos, en este caso los países incluidos en cada grupo y la media del valor puntuación en cada grupo.
+
+```{r, echo=TRUE}
+print (happiness_report[happiness_report$Grupo == "1",]$Country)
+mean(happiness_report[happiness_report$Grupo == "1",]$Score)
+print (happiness_report[happiness_report$Grupo == "2",]$Country)
+mean(happiness_report[happiness_report$Grupo == "2",]$Score)
+print (happiness_report[happiness_report$Grupo == "3",]$Country)
+mean(happiness_report[happiness_report$Grupo == "3",]$Score)
+print (happiness_report[happiness_report$Grupo == "4",]$Country)
+mean(happiness_report[happiness_report$Grupo == "4",]$Score)
+```
+
+Tras revisar los datos se puede predecir que los grupos creados sí contendrán países en los que se observe una puntuación de felicidad similar. A confinuación se representará un histograma con los valores de felicidad distinguiendo por grupos para comprobar de manera visual su distribución.
+
+```{r, echo=TRUE}
+ggplot(happiness_report, aes(x=Score, color=Grupo, fill=Grupo)) +
+  geom_histogram(alpha=0.5, position="identity")
+```
+
+A partir del histograma se observa que las agrupaciones creadas por el algoritmo K-means son coherentes con la distribución de los valores de la calificación obtenida por los países. En el grupo 2 se encuentran los países que mejor calificación obtuvieron, en el grupo 1 los que peor. Con estas agrupaciones se pueden observar otras similitudes o desarrollar un modelo que prediga a que grupo pertenecería un nuevo país.
+
+
+### Predicción de nuevas calificaciones
+
+#### Regresión lineal
+
+Por último, como se comentó en el comienzo del proyecto, se considera que un posible punto de interés de este proyecto sería predecir como los cambios en la percepción de los dominios por la población podrían afectar al nivel general de felicidad en un país.
+
+Puesto que se dispone de variables numéricas para medir estos datos, se puede definir una función que modele la distribución de los datos y que se pueda usar para predecir como afectarían dichos cambios en la puntuación final.
+
+```{r, echo=TRUE}
+#Se almacenan los datos en nuevas variables para escribir la fórmula de regresión lineal de manera más sencilla.
+generosidad = happiness_report$Generosity
+esperanzavida = happiness_report$Healthy.life.expectancy
+corrupcion = happiness_report$Perceptions.of.corruption
+GDPpercapita = happiness_report$GDP.per.capita
+libertad = happiness_report$Freedom.to.make.life.choices
+apoyosociedad = happiness_report$Social.support
+puntuacion = happiness_report$Score
+
+
+# Generación de varios modelos
+#El primer modelo contiene todos los dominios
+modelo1 <- lm(puntuacion ~ generosidad + esperanzavida + corrupcion + GDPpercapita +
+libertad + apoyosociedad, data = happiness_report)
+#El segundo contiene todos menos generosidad ya que es el que menos afecta a la puntuación final
+modelo2 <- lm(puntuacion ~ esperanzavida + corrupcion + GDPpercapita +
+libertad + apoyosociedad, data = happiness_report)
+#Por último, el tercero solo contiene los dominios que más influyen a la felicidad
+modelo3 <- lm(puntuacion ~ esperanzavida + GDPpercapita + apoyosociedad, data = happiness_report)
+
+tabla.coeficientes <- matrix(c(1, summary(modelo1)$r.squared,
+2, summary(modelo2)$r.squared,
+3, summary(modelo3)$r.squared),
+ncol = 2, byrow = TRUE)
+colnames(tabla.coeficientes) <- c("Modelo", "R^2")
+
+tabla.coeficientes
+```
+Se obtiene que el primer modelo, que incluye todos los dominios del reporte, es el que ofrece un mejor resultado.
+
+Una vez creado y seleccionado el modelo, se utilizará para preveer la calificación de un nuevo país que se incorporará al raking, con valores aleatorios.
+
+```{r, echo=TRUE}
+newdata <- data.frame(
+    generosidad = 0.87354,
+    esperanzavida = 0.65749,
+    corrupcion = 0.2321421,
+    GDPpercapita = 0.78273812,
+    libertad = 0.9865,
+    apoyosociedad = 0.2312320
+)
+#Utilizar el modelo para calcular el nivel de felicidad.
+predict(modelo1, newdata)
+```
+
+Se puede representar el nuevo país en el histograma anterior para comprobar como se posiciona este valor en el resto de las calificaciones.
+
+```{r, echo=TRUE}
+ggplot(happiness_report, aes(x=Score, color=Grupo, fill=Grupo)) +
+  geom_histogram(alpha=0.5, position="identity")+ 
+  geom_vline(aes(xintercept=5.459695), color="blue",
+             linetype="dashed")
+```
+  
+  
+Se observa que el nuevo país incluido se encontraría en el grupo 3, entre los países con un nivel de felicidad medio-alto.
+
+## Exportación de datos
+Una vez que hemos acometido sobre el conjunto de datos inicial los procedimientos de
+integración, validación y limpieza anteriores, procedemos a guardar estos en un nuevo fichero
+denominado Automobile_data_clean.csv:
+
+```{r, echo=TRUE}
+# Exportación de los datos limpios en .csv
+write.csv(happiness_report, "happiness_report_clean.csv")
+```
+
+****
+# Conclusiones
+****
+
+Con las pruebas realizadas se han podido resolver las preguntas marcadas al inicio del proyecto. Mediante el análisis de la correlación de las variables con la puntuación de cada país se ha comprobado qué variables son las que más relación tienen con la puntuación obtenida, lo que puede permitir centrar el análisis en las mismas. En este caso, dado el tamaño de los datos, no ha sido necesario. Con esta información se podrían priorizar distintas medidas políticas que puedan afectar más a estos campos para obtener un mayor nivel de felicidad en la población con menos esfuerzo.
+
+A continuación se utilizó un algoritmo de agrupación para crear grupos en la población de los datos que permitan establecer relaciones entre los distintos países y comprobar qué tienen en común aquellos que tienen un mayor nivel de felicidad en comparación con los que lo tienen menor.
+
+Por último, utilizando un regresión lineal, se creó el modelo que permitió predecir el nivel de felicidad de un nuevo país, pero también podría ser utilizado para valorar la influencia de un nuevo valor en alguno de los dominios.
+
+Para realizar los análisis se realizó un proceso de limpieza de datos sobre el conjunto bajo análisis. El conjunto de datos no disponía de valores nulos, por lo que simplemente fue necesario eliminar los atributos que no aportaban valor al análisis.
